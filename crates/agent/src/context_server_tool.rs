@@ -119,8 +119,23 @@ impl Tool for ContextServerTool {
                         types::ToolResponseContent::Text { text } => {
                             result.push_str(&text);
                         }
-                        types::ToolResponseContent::Image { .. } => {
-                            log::warn!("Ignoring image content from tool response");
+                        types::ToolResponseContent::Image { data, .. } => {
+                            if result.is_empty() {
+                                return Ok(assistant_tool::ToolResultOutput {
+                                    content: assistant_tool::ToolResultContent::Image(
+                                        language_model::LanguageModelImage {
+                                            source: data.into(),
+                                            size: gpui::Size {
+                                                width: gpui::DevicePixels(800),
+                                                height: gpui::DevicePixels(600),
+                                            },
+                                        },
+                                    ),
+                                    output: None,
+                                });
+                            } else {
+                                log::warn!("Ignoring image content from mixed tool response");
+                            }
                         }
                         types::ToolResponseContent::Audio { .. } => {
                             log::warn!("Ignoring audio content from tool response");
