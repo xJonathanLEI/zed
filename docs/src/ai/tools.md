@@ -20,6 +20,10 @@ Quickly finds files by matching glob patterns (like "\*_/_.js"), returning match
 
 Searches file contents across the project using regular expressions, preferred for finding symbols in code without knowing exact file paths.
 
+### `sleep`
+
+Sleep for a certain duration, useful for waiting for background tasks to finish.
+
 ### `list_directory`
 
 Lists files and directories in a given path, providing an overview of filesystem contents.
