@@ -14,6 +14,7 @@ mod open_tool;
 mod project_notifications_tool;
 mod read_file_tool;
 mod schema;
+mod sleep_tool;
 pub mod templates;
 mod terminal_tool;
 mod thinking_tool;
@@ -26,6 +27,7 @@ use gpui::{App, Entity};
 use http_client::HttpClientWithUrl;
 use language_model::LanguageModelRegistry;
 use move_path_tool::MovePathTool;
+use sleep_tool::SleepTool;
 use std::sync::Arc;
 use web_search_tool::WebSearchTool;
 
@@ -68,6 +70,7 @@ pub fn init(http_client: Arc<HttpClientWithUrl>, cx: &mut App) {
     registry.register_tool(ThinkingTool);
     registry.register_tool(FetchTool::new(http_client));
     registry.register_tool(EditFileTool);
+    registry.register_tool(SleepTool);
 
     register_web_search_tool(&LanguageModelRegistry::global(cx), cx);
     cx.subscribe(

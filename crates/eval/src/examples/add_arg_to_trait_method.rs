@@ -58,6 +58,7 @@ impl Example for AddArgToTraitMethod {
             "path_search_tool",
             "read_file_tool",
             "rename_tool",
+            "sleep_tool",
             "symbol_info_tool",
             "terminal_tool",
             "thinking_tool",
