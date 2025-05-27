@@ -95,7 +95,7 @@ struct ModelPolicy {
 struct ModelSupportedFeatures {
     #[serde(default)]
     streaming: bool,
-    #[serde(default)]
+    #[serde(default = "default_as_true")]
     tool_calls: bool,
     #[serde(default)]
     parallel_tool_calls: bool,
@@ -657,6 +657,10 @@ async fn stream_completion(
 
         Ok(futures::stream::once(async move { Ok(response) }).boxed())
     }
+}
+
+const fn default_as_true() -> bool {
+    true
 }
 
 #[cfg(test)]
