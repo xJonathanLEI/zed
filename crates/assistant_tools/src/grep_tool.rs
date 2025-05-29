@@ -135,11 +135,16 @@ impl Tool for GrepTool {
         // Exclude global file_scan_exclusions and private_files settings
         let exclude_matcher = {
             let global_settings = WorktreeSettings::get_global(cx);
+
+            // SVG files can have extremely long lines causing context to explode
+            let svg_pattern = ["**/*.svg".to_owned()];
+
             let exclude_patterns = global_settings
                 .file_scan_exclusions
                 .sources()
                 .iter()
-                .chain(global_settings.private_files.sources().iter());
+                .chain(global_settings.private_files.sources().iter())
+                .chain(svg_pattern.iter());
 
             match PathMatcher::new(exclude_patterns) {
                 Ok(matcher) => matcher,
