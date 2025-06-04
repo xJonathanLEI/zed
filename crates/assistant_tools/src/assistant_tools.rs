@@ -15,6 +15,7 @@ mod project_notifications_tool;
 mod read_file_tool;
 mod schema;
 mod sleep_tool;
+mod symbol_definition_tool;
 pub mod templates;
 mod terminal_tool;
 mod thinking_tool;
@@ -40,6 +41,7 @@ use crate::edit_file_tool::EditFileTool;
 use crate::fetch_tool::FetchTool;
 use crate::list_directory_tool::ListDirectoryTool;
 use crate::now_tool::NowTool;
+use crate::symbol_definition_tool::SymbolDefinitionTool;
 use crate::thinking_tool::ThinkingTool;
 
 pub use edit_file_tool::{EditFileMode, EditFileToolInput};
@@ -71,6 +73,7 @@ pub fn init(http_client: Arc<HttpClientWithUrl>, cx: &mut App) {
     registry.register_tool(FetchTool::new(http_client));
     registry.register_tool(EditFileTool);
     registry.register_tool(SleepTool);
+    registry.register_tool(SymbolDefinitionTool);
 
     register_web_search_tool(&LanguageModelRegistry::global(cx), cx);
     cx.subscribe(

@@ -24,6 +24,9 @@ Searches file contents across the project using regular expressions, preferred f
 
 Sleep for a certain duration, useful for waiting for background tasks to finish.
 
+### `symbol_definition`
+
+Find the definition location of a symbol at a specific position in a file.
 ### `list_directory`
 
 Lists files and directories in a given path, providing an overview of filesystem contents.

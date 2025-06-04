@@ -859,6 +859,7 @@
           "read_file": true,
           "grep": true,
           "sleep": true,
+          "symbol_definition": true,
           "terminal": true,
           "thinking": true,
           "web_search": true
@@ -880,6 +881,7 @@
           "open": true,
           "grep": true,
           "sleep": true,
+          "symbol_definition": true,
           "thinking": true,
           "web_search": true
         }
