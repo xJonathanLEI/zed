@@ -24,6 +24,7 @@ use crate::{git_panel::GitPanel, text_diff_view::TextDiffView};
 
 mod askpass_modal;
 pub mod branch_picker;
+mod changed_file_finder;
 mod commit_modal;
 pub mod commit_tooltip;
 mod commit_view;
@@ -50,6 +51,8 @@ pub fn init(cx: &mut App) {
     GitPanelSettings::register(cx);
 
     editor::set_blame_renderer(blame_ui::GitBlameRenderer, cx);
+
+    changed_file_finder::init(cx);
 
     cx.observe_new(|editor: &mut Editor, _, cx| {
         conflict_view::register_editor(editor, editor.buffer().clone(), cx);
