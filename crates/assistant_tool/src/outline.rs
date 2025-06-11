@@ -170,13 +170,19 @@ pub async fn get_buffer_content_or_outline(
 
         let text = if let Some(path) = path {
             format!(
-                "# File outline for {} (file too large to show full content)\n\n{}",
+                "This file was too big to include in full.\n\n\
+                Here is an outline of its symbols for {}:\n\n\
+                {}\n\n\
+                Use a tool to read specific line ranges if you need to see the implementation.",
                 path.display(),
                 outline_text
             )
         } else {
             format!(
-                "# File outline (file too large to show full content)\n\n{}",
+                "This file was too big to include in full.\n\n\
+                Here is an outline of its symbols:\n\n\
+                {}\n\n\
+                Use a tool to read specific line ranges if you need to see the implementation.",
                 outline_text
             )
         };
