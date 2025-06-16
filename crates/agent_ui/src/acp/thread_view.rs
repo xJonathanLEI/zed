@@ -496,7 +496,7 @@ impl AcpThreadView {
                         if err.downcast_ref::<LoadError>().is_some() {
                             this.handle_load_error(err, window, cx);
                         } else {
-                            this.handle_thread_error(err, cx);
+                            this.handle_thread_error_with_window(err, window, cx);
                         }
                         cx.notify();
                     })
@@ -1276,6 +1276,32 @@ impl AcpThreadView {
 
     fn handle_thread_error(&mut self, error: anyhow::Error, cx: &mut Context<Self>) {
         self.thread_error = Some(ThreadError::from_err(error, &self.agent));
+        cx.notify();
+    }
+
+    fn handle_thread_error_with_window(
+        &mut self,
+        error: anyhow::Error,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let thread_error = ThreadError::from_err(error, &self.agent);
+
+        // Show notification with appropriate message for errors
+        let notification_text = match &thread_error {
+            ThreadError::PaymentRequired => "Payment required".into(),
+            ThreadError::ModelRequestLimitReached(_) => "Model request limit reached".into(),
+            ThreadError::ToolUseLimitReached => "Tool use limit reached".into(),
+            ThreadError::Refusal => "Model refused to respond".into(),
+            ThreadError::AuthenticationRequired(msg) => {
+                format!("Authentication required: {}", msg).into()
+            }
+            ThreadError::Other(msg) => msg.clone(),
+        };
+
+        self.notify_with_sound(&notification_text, IconName::XCircle, window, cx);
+
+        self.thread_error = Some(thread_error);
         cx.notify();
     }
 

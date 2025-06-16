@@ -452,7 +452,7 @@ impl AgentConfiguration {
             "sound-notification",
             "Play sound when finished generating",
             Some(
-                "Hear a notification sound when the agent is done generating changes or needs your input.".into(),
+                "Hear a notification sound when the agent is done generating changes, encounters an error, or needs your input.".into(),
             ),
             play_sound_when_agent_done,
             move |state, _window, cx| {
