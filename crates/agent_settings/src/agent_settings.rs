@@ -279,7 +279,7 @@ pub struct AgentSettingsContent {
     ///
     /// Default: "primary_screen"
     notify_when_agent_waiting: Option<NotifyWhenAgentWaiting>,
-    /// Whether to play a sound when the agent has either completed its response, or needs user input.
+    /// Whether to play a sound when the agent has either completed its response, encountered an error, or needs user input.
     ///
     /// Default: false
     play_sound_when_agent_done: Option<bool>,
