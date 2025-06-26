@@ -134,6 +134,7 @@ actions!(
         ContinueWithBurnMode,
         /// Toggles burn mode for faster responses.
         ToggleBurnMode,
+        ToggleAlwaysContinue,
     ]
 );
 

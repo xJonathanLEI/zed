@@ -1189,6 +1189,14 @@ impl ActiveThread {
                 self.save_thread(cx);
                 cx.notify();
             }
+            ThreadEvent::RetriesFailed { .. } => {
+                // Handle retries failed event
+                cx.notify();
+            }
+            ThreadEvent::ShouldAutoContinue => {
+                // Handle auto-continue event
+                cx.notify();
+            }
         }
     }
 

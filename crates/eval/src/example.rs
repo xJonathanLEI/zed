@@ -298,7 +298,9 @@ impl ExampleContext {
                 | ThreadEvent::ReceivedTextChunk
                 | ThreadEvent::StreamedToolUse { .. }
                 | ThreadEvent::CheckpointChanged
-                | ThreadEvent::CancelEditing => {
+                | ThreadEvent::CancelEditing
+                | ThreadEvent::ShouldAutoContinue
+                | ThreadEvent::RetriesFailed { .. } => {
                     tx.try_send(Ok(())).ok();
                     if std::env::var("ZED_EVAL_DEBUG").is_ok() {
                         println!("{}Event: {:#?}", log_prefix, event);
