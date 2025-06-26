@@ -1,5 +1,6 @@
 mod acp_onboarding_modal;
 mod agent_notification;
+mod always_continue_tooltip;
 mod burn_mode_tooltip;
 mod claude_code_onboarding_modal;
 mod context_pill;
@@ -10,6 +11,9 @@ mod usage_callout;
 
 pub use acp_onboarding_modal::*;
 pub use agent_notification::*;
+// Note: AlwaysContinueTooltip UI integration was removed during refactoring,
+// but the backend always_continue functionality remains in agent/src/thread.rs
+// pub use always_continue_tooltip::*;
 pub use burn_mode_tooltip::*;
 pub use claude_code_onboarding_modal::*;
 pub use context_pill::*;

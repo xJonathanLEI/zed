@@ -397,6 +397,7 @@ pub struct Thread {
     configured_model: Option<ConfiguredModel>,
     profile: AgentProfile,
     last_error_context: Option<(Arc<dyn LanguageModel>, CompletionIntent)>,
+    always_continue: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -494,6 +495,7 @@ impl Thread {
             remaining_turns: u32::MAX,
             configured_model,
             profile: AgentProfile::new(profile_id, tools),
+            always_continue: true,
         }
     }
 
@@ -617,6 +619,7 @@ impl Thread {
             remaining_turns: u32::MAX,
             configured_model,
             profile: AgentProfile::new(profile_id, tools),
+            always_continue: true,
         }
     }
 
@@ -924,6 +927,14 @@ impl Thread {
         self.tool_use_limit_reached
     }
 
+    pub fn always_continue(&self) -> bool {
+        self.always_continue
+    }
+
+    pub fn set_always_continue(&mut self, value: bool) {
+        self.always_continue = value;
+    }
+
     /// Returns whether all of the tool uses have finished running.
     pub fn all_tools_finished(&self) -> bool {
         // If the only pending tool uses left are the ones with errors, then
@@ -1042,6 +1053,7 @@ impl Thread {
             cx,
         );
         self.pending_checkpoint = None;
+        self.tool_use_limit_reached = false;
 
         id
     }
@@ -1662,8 +1674,6 @@ impl Thread {
         window: Option<AnyWindowHandle>,
         cx: &mut Context<Self>,
     ) {
-        self.tool_use_limit_reached = false;
-
         let pending_completion_id = post_inc(&mut self.completion_count);
         let mut request_callback_parameters = if self.request_callback.is_some() {
             Some((request.clone(), Vec::new()))
@@ -2058,8 +2068,18 @@ impl Thread {
                         }
                     }
 
+                    // Check if we should auto-continue before emitting the Stopped event
+                    let should_auto_continue = matches!(result, Ok(StopReason::ToolUse))
+                        && thread.tool_use_limit_reached
+                        && thread.always_continue;
+
                     if !retry_scheduled {
                         cx.emit(ThreadEvent::Stopped(result.map_err(Arc::new)));
+                    }
+
+                    // Emit an additional event to trigger auto-continue if needed
+                    if should_auto_continue {
+                        cx.emit(ThreadEvent::ShouldAutoContinue);
                     }
 
                     if let Some((request_callback, (request, response_events))) = thread
@@ -3253,6 +3273,10 @@ pub enum ThreadEvent {
     CancelEditing,
     CompletionCanceled,
     ProfileChanged,
+    RetriesFailed {
+        message: SharedString,
+    },
+    ShouldAutoContinue,
 }
 
 impl EventEmitter<ThreadEvent> for Thread {}
