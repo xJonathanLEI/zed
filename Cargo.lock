@@ -9176,6 +9176,7 @@ dependencies = [
  "vercel",
  "workspace-hack",
  "x_ai",
+ "zed_env_vars",
 ]
 
 [[package]]
@@ -20544,6 +20545,7 @@ dependencies = [
 name = "zed_env_vars"
 version = "0.1.0"
 dependencies = [
+ "gpui",
  "workspace-hack",
 ]
 

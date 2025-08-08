@@ -45,7 +45,7 @@ impl AgentServer for Gemini {
         cx.spawn(async move |cx| {
             let mut extra_env = HashMap::default();
             if let Some(api_key) = cx.update(GoogleLanguageModelProvider::api_key)?.await.ok() {
-                extra_env.insert("GEMINI_API_KEY".into(), api_key.key);
+                extra_env.insert("GEMINI_API_KEY".into(), api_key.key().to_string());
             }
             let (mut command, root_dir, login) = store
                 .update(cx, |store, cx| {

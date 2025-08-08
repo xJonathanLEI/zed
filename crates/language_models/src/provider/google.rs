@@ -37,7 +37,7 @@ use util::ResultExt;
 use crate::AllLanguageModelSettings;
 use crate::ui::InstructionListItem;
 
-use super::anthropic::ApiKey;
+use crate::api_key::ApiKey;
 
 const PROVIDER_ID: LanguageModelProviderId = language_model::GOOGLE_PROVIDER_ID;
 const PROVIDER_NAME: LanguageModelProviderName = language_model::GOOGLE_PROVIDER_NAME;
@@ -209,10 +209,7 @@ impl GoogleLanguageModelProvider {
             .clone();
 
         if let Ok(key) = std::env::var(GEMINI_API_KEY_VAR) {
-            Task::ready(Ok(ApiKey {
-                key,
-                from_env: true,
-            }))
+            Task::ready(Ok(ApiKey::from_env(GEMINI_API_KEY_VAR.into(), &key)))
         } else {
             cx.spawn(async move |cx| {
                 let (_, api_key) = credentials_provider
@@ -220,10 +217,8 @@ impl GoogleLanguageModelProvider {
                     .await?
                     .ok_or(AuthenticateError::CredentialsNotFound)?;
 
-                Ok(ApiKey {
-                    key: String::from_utf8(api_key).context("invalid {PROVIDER_NAME} API key")?,
-                    from_env: false,
-                })
+                let key = String::from_utf8(api_key).context("invalid {PROVIDER_NAME} API key")?;
+                Ok(ApiKey::from_system_keychain(key.into()))
             })
         }
     }

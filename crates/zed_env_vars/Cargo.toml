@@ -15,4 +15,5 @@ path = "src/zed_env_vars.rs"
 default = []
 
 [dependencies]
+gpui.workspace = true
 workspace-hack.workspace = true
