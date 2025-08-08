@@ -2,12 +2,13 @@ use crate::api_key::ApiKeyState;
 use crate::ui::InstructionListItem;
 use anthropic::{
     ANTHROPIC_API_URL, AnthropicError, AnthropicModelMode, ContentDelta, Event, ResponseContent,
-    ToolResultContent, ToolResultPart, Usage,
+    ToolResultContent, ToolResultPart, Usage, oauth,
 };
 use anyhow::{Result, anyhow};
+use chrono::{DateTime, Utc};
 use collections::{BTreeMap, HashMap};
 use editor::{Editor, EditorElement, EditorStyle};
-use futures::{FutureExt, Stream, StreamExt, future, future::BoxFuture, stream::BoxStream};
+use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, stream::BoxStream};
 use gpui::{AnyView, App, AsyncApp, Context, Entity, FontStyle, Task, TextStyle, WhiteSpace};
 use http_client::HttpClient;
 use language_model::{
@@ -26,7 +27,10 @@ use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
 use strum::IntoEnumIterator;
 use theme::ThemeSettings;
-use ui::{Icon, IconName, List, Tooltip, prelude::*};
+use ui::{
+    Icon, IconName, List, ToggleButtonGroup, ToggleButtonGroupStyle, ToggleButtonSimple, Tooltip,
+    prelude::*,
+};
 use util::{ResultExt, truncate_and_trailoff};
 use zed_env_vars::{EnvVar, env_var};
 
@@ -97,29 +101,169 @@ pub struct AnthropicLanguageModelProvider {
 const API_KEY_ENV_VAR_NAME: &str = "ANTHROPIC_API_KEY";
 static API_KEY_ENV_VAR: LazyLock<EnvVar> = env_var!(API_KEY_ENV_VAR_NAME);
 
+#[derive(Debug, Clone)]
+enum AuthMethod {
+    ApiKey,
+    OAuth {
+        refresh_token: String,
+        access_token: Option<CachedAccessToken>,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct CachedAccessToken {
+    token: String,
+    expires_at: DateTime<Utc>,
+}
+
 pub struct State {
     api_key_state: ApiKeyState,
+    auth_method: Option<AuthMethod>,
 }
 
 impl State {
-    fn is_authenticated(&self) -> bool {
-        self.api_key_state.has_key()
-    }
-
     fn set_api_key(&mut self, api_key: Option<String>, cx: &mut Context<Self>) -> Task<Result<()>> {
         let api_url = AnthropicLanguageModelProvider::api_url(cx);
+        self.auth_method = api_key.as_ref().map(|_| AuthMethod::ApiKey);
         self.api_key_state
             .store(api_url, api_key, |this| &mut this.api_key_state, cx)
     }
 
+    fn set_refresh_token(
+        &mut self,
+        refresh_token: String,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let api_url = AnthropicLanguageModelProvider::api_url(cx);
+        let credentials_provider = <dyn credentials_provider::CredentialsProvider>::global(cx);
+
+        self.auth_method = Some(AuthMethod::OAuth {
+            refresh_token: refresh_token.clone(),
+            access_token: None,
+        });
+
+        cx.spawn(async move |this, cx| {
+            credentials_provider
+                .write_credentials(&api_url, "OAuth", refresh_token.as_bytes(), cx)
+                .await
+                .ok();
+
+            this.update(cx, |_, cx| {
+                cx.notify();
+            })
+        })
+    }
+
+    fn is_authenticated(&self) -> bool {
+        self.api_key_state.has_key() || self.auth_method.is_some()
+    }
+
+    fn is_using_api_key(&self) -> bool {
+        matches!(self.auth_method, Some(AuthMethod::ApiKey))
+            || (self.auth_method.is_none() && self.api_key_state.has_key())
+    }
+
+    fn is_api_key_from_env(&self) -> bool {
+        self.api_key_state.is_from_env_var()
+    }
+
     fn authenticate(&mut self, cx: &mut Context<Self>) -> Task<Result<(), AuthenticateError>> {
         let api_url = AnthropicLanguageModelProvider::api_url(cx);
-        self.api_key_state.load_if_needed(
-            api_url,
-            &API_KEY_ENV_VAR,
-            |this| &mut this.api_key_state,
-            cx,
-        )
+        let credentials_provider = <dyn credentials_provider::CredentialsProvider>::global(cx);
+        
+        cx.spawn(async move |this, cx| {
+            // First check if we have OAuth credentials stored
+            let oauth_check = credentials_provider.read_credentials(&api_url, &cx).await;
+            
+            if let Ok(Some((auth_type, credentials))) = oauth_check {
+                if auth_type == "OAuth" {
+                    let refresh_token = String::from_utf8(credentials)
+                        .map_err(|_| AuthenticateError::CredentialsNotFound)?;
+                    this.update(cx, |this, cx| {
+                        this.auth_method = Some(AuthMethod::OAuth {
+                            refresh_token,
+                            access_token: None,
+                        });
+                        cx.notify();
+                    })?;
+                    return Ok(());
+                }
+            }
+
+            // Fall back to API key authentication
+            this.update(cx, |this, cx| {
+                this.api_key_state.load_if_needed(
+                    api_url,
+                    &API_KEY_ENV_VAR,
+                    |this| &mut this.api_key_state,
+                    cx,
+                )
+            })?
+            .await
+        })
+    }
+
+    fn get_cached_token(&self, api_url: &SharedString) -> Option<String> {
+        match &self.auth_method {
+            Some(AuthMethod::ApiKey) | None => {
+                self.api_key_state.key(api_url).map(|k| k.to_string())
+            }
+            Some(AuthMethod::OAuth { access_token, .. }) => {
+                access_token.as_ref().and_then(|cached| {
+                    if !oauth::is_token_expired(cached.expires_at) {
+                        Some(cached.token.clone())
+                    } else {
+                        None
+                    }
+                })
+            }
+        }
+    }
+
+    fn refresh_oauth_token(
+        &mut self,
+        http_client: Arc<dyn HttpClient>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<String>> {
+        let refresh_token = match &self.auth_method {
+            Some(AuthMethod::OAuth { refresh_token, .. }) => refresh_token.clone(),
+            _ => return Task::ready(Err(anyhow!("No OAuth refresh token available"))),
+        };
+
+        let api_url = AnthropicLanguageModelProvider::api_url(cx);
+        let credentials_provider = <dyn credentials_provider::CredentialsProvider>::global(cx);
+
+        cx.spawn(async move |this, cx| {
+            let token_response =
+                oauth::refresh_access_token(http_client.as_ref(), &refresh_token).await?;
+            let expires_at = oauth::calculate_token_expiration(token_response.expires_in);
+
+            let new_cached = CachedAccessToken {
+                token: token_response.access_token.clone(),
+                expires_at,
+            };
+
+            // Persist the new refresh token to credentials storage
+            credentials_provider
+                .write_credentials(
+                    &api_url,
+                    "OAuth",
+                    token_response.refresh_token.as_bytes(),
+                    cx,
+                )
+                .await
+                .ok();
+
+            this.update(cx, |this, cx| {
+                this.auth_method = Some(AuthMethod::OAuth {
+                    refresh_token: token_response.refresh_token.clone(),
+                    access_token: Some(new_cached),
+                });
+                cx.notify();
+            })?;
+
+            Ok(token_response.access_token)
+        })
     }
 }
 
@@ -139,6 +283,7 @@ impl AnthropicLanguageModelProvider {
             .detach();
             State {
                 api_key_state: ApiKeyState::new(Self::api_url(cx)),
+                auth_method: None,
             }
         });
 
@@ -267,8 +412,10 @@ impl LanguageModelProvider for AnthropicLanguageModelProvider {
     }
 
     fn reset_credentials(&self, cx: &mut App) -> Task<Result<()>> {
-        self.state
-            .update(cx, |state, cx| state.set_api_key(None, cx))
+        self.state.update(cx, |state, cx| {
+            state.auth_method = None;
+            state.set_api_key(None, cx)
+        })
     }
 }
 
@@ -357,30 +504,111 @@ impl AnthropicModel {
         >,
     > {
         let http_client = self.http_client.clone();
+        let state = self.state.clone();
 
-        let Ok((api_key, api_url)) = self.state.read_with(cx, |state, cx| {
+        // Extract values from cx before async move
+        let result = cx.update(|cx| {
             let api_url = AnthropicLanguageModelProvider::api_url(cx);
-            (state.api_key_state.key(&api_url), api_url)
-        }) else {
-            return future::ready(Err(anyhow!("App state dropped").into())).boxed();
-        };
+            let (cached_token, is_using_api_key) = cx.read_entity(&state, |state, _| {
+                (state.get_cached_token(&api_url), state.is_using_api_key())
+            });
+            let needs_oauth_refresh = if cached_token.is_none() {
+                cx.read_entity(&state, |state, _| {
+                    matches!(state.auth_method, Some(AuthMethod::OAuth { .. }))
+                })
+            } else {
+                false
+            };
+            let refresh_task = if cached_token.is_none() && needs_oauth_refresh {
+                Some(state.update(cx, |state, cx| {
+                    state.refresh_oauth_token(http_client.clone(), cx)
+                }))
+            } else {
+                None
+            };
+            (api_url, cached_token, is_using_api_key, refresh_task)
+        });
 
         let beta_headers = self.model.beta_headers();
 
         async move {
-            let Some(api_key) = api_key else {
+            let (api_url, cached_token, is_using_api_key, refresh_task) =
+                result.map_err(|_| anyhow!("App state dropped"))?;
+
+            let (auth_token, is_oauth) = if let Some(token) = cached_token {
+                (token, !is_using_api_key)
+            } else if let Some(refresh_task) = refresh_task {
+                let token = refresh_task.await?;
+                (token, true)
+            } else {
                 return Err(LanguageModelCompletionError::NoApiKey {
                     provider: PROVIDER_NAME,
                 });
             };
-            let request = anthropic::stream_completion(
-                http_client.as_ref(),
-                &api_url,
-                &api_key,
-                request,
-                beta_headers,
-            );
-            request.await.map_err(Into::into)
+
+            // Prepend Claude Code system prompt for OAuth authentication
+            let request = if is_oauth {
+                let mut modified_request = request;
+                let claude_code_prompt =
+                    "You are Claude Code, Anthropic's official CLI for Claude.";
+
+                // Prepend the Claude Code prompt to the system message
+                modified_request.system = match modified_request.system {
+                    Some(anthropic::StringOrContents::String(existing)) => {
+                        Some(anthropic::StringOrContents::Content(vec![
+                            anthropic::RequestContent::Text {
+                                text: claude_code_prompt.to_string(),
+                                cache_control: None,
+                            },
+                            anthropic::RequestContent::Text {
+                                text: existing,
+                                cache_control: None,
+                            },
+                        ]))
+                    }
+                    Some(anthropic::StringOrContents::Content(mut contents)) => {
+                        // Insert Claude Code prompt at the beginning
+                        contents.insert(
+                            0,
+                            anthropic::RequestContent::Text {
+                                text: claude_code_prompt.to_string(),
+                                cache_control: None,
+                            },
+                        );
+                        Some(anthropic::StringOrContents::Content(contents))
+                    }
+                    None => Some(anthropic::StringOrContents::String(
+                        claude_code_prompt.to_string(),
+                    )),
+                };
+
+                modified_request
+            } else {
+                request
+            };
+
+            let request = if is_oauth {
+                // Use OAuth endpoint with Bearer token (request already has Claude Code prompt)
+                anthropic::stream_completion_with_oauth(
+                    http_client.as_ref(),
+                    &api_url,
+                    &auth_token,
+                    request,
+                )
+                .await
+            } else {
+                // Use regular API key endpoint with beta headers
+                anthropic::stream_completion(
+                    http_client.as_ref(),
+                    &api_url,
+                    &auth_token,
+                    request,
+                    beta_headers,
+                )
+                .await
+            };
+
+            request.map_err(Into::into)
         }
         .boxed()
     }
@@ -871,15 +1099,23 @@ fn convert_usage(usage: &Usage) -> language_model::TokenUsage {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum AuthMethodSelection {
+    ApiKey,
+    OAuth,
+}
+
 struct ConfigurationView {
     api_key_editor: Entity<Editor>,
     state: gpui::Entity<State>,
     load_credentials_task: Option<Task<()>>,
+    auth_method: AuthMethodSelection,
     target_agent: ConfigurationViewTargetAgent,
 }
 
 impl ConfigurationView {
-    const PLACEHOLDER_TEXT: &'static str = "sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    const API_KEY_PLACEHOLDER: &'static str = "sk-ant-xxxxx...";
+    const OAUTH_PLACEHOLDER: &'static str = "Refresh token from Claude subscription";
 
     fn new(
         state: gpui::Entity<State>,
@@ -903,6 +1139,13 @@ impl ConfigurationView {
                     let _ = task.await;
                 }
                 this.update(cx, |this, cx| {
+                    // Set the auth_method based on what was loaded
+                    if let Some(auth_method) = this.state.read(cx).auth_method.as_ref() {
+                        this.auth_method = match auth_method {
+                            AuthMethod::ApiKey => AuthMethodSelection::ApiKey,
+                            AuthMethod::OAuth { .. } => AuthMethodSelection::OAuth,
+                        };
+                    }
                     this.load_credentials_task = None;
                     cx.notify();
                 })
@@ -913,18 +1156,19 @@ impl ConfigurationView {
         Self {
             api_key_editor: cx.new(|cx| {
                 let mut editor = Editor::single_line(window, cx);
-                editor.set_placeholder_text(Self::PLACEHOLDER_TEXT, window, cx);
+                editor.set_placeholder_text(Self::API_KEY_PLACEHOLDER, window, cx);
                 editor
             }),
             state,
             load_credentials_task,
+            auth_method: AuthMethodSelection::ApiKey,
             target_agent,
         }
     }
 
-    fn save_api_key(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
-        let api_key = self.api_key_editor.read(cx).text(cx);
-        if api_key.is_empty() {
+    fn save_credentials(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.api_key_editor.read(cx).text(cx).trim().to_string();
+        if input.is_empty() {
             return;
         }
 
@@ -933,12 +1177,45 @@ impl ConfigurationView {
             .update(cx, |editor, cx| editor.set_text("", window, cx));
 
         let state = self.state.clone();
-        cx.spawn_in(window, async move |_, cx| {
-            state
-                .update(cx, |state, cx| state.set_api_key(Some(api_key), cx))?
-                .await
+        let auth_method = self.auth_method;
+        cx.spawn_in(window, async move |_, cx| match auth_method {
+            AuthMethodSelection::ApiKey => {
+                state
+                    .update(cx, |state, cx| state.set_api_key(Some(input), cx))?
+                    .await
+            }
+            AuthMethodSelection::OAuth => {
+                state
+                    .update(cx, |state, cx| state.set_refresh_token(input, cx))?
+                    .await
+            }
         })
         .detach_and_log_err(cx);
+
+        cx.notify();
+    }
+
+    fn set_auth_method(
+        &mut self,
+        method: AuthMethodSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.auth_method != method {
+            self.auth_method = method;
+            self.api_key_editor.update(cx, |editor, cx| {
+                editor.set_text("", window, cx);
+                editor.set_placeholder_text(
+                    match method {
+                        AuthMethodSelection::ApiKey => Self::API_KEY_PLACEHOLDER,
+                        AuthMethodSelection::OAuth => Self::OAUTH_PLACEHOLDER,
+                    },
+                    window,
+                    cx,
+                );
+            });
+            cx.notify();
+        }
     }
 
     fn reset_api_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -948,13 +1225,18 @@ impl ConfigurationView {
         let state = self.state.clone();
         cx.spawn_in(window, async move |_, cx| {
             state
-                .update(cx, |state, cx| state.set_api_key(None, cx))?
+                .update(cx, |state, cx| {
+                    state.auth_method = None;
+                    state.set_api_key(None, cx)
+                })?
                 .await
         })
         .detach_and_log_err(cx);
+
+        cx.notify();
     }
 
-    fn render_api_key_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_credentials_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = ThemeSettings::get_global(cx);
         let text_style = TextStyle {
             color: cx.theme().colors().text,
@@ -986,29 +1268,90 @@ impl ConfigurationView {
 
 impl Render for ConfigurationView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let env_var_set = self.state.read(cx).api_key_state.is_from_env_var();
+        let env_var_set = self.state.read(cx).is_api_key_from_env();
+
+        let state = self.state.read(cx);
+        let is_using_oauth = !state.is_using_api_key() && state.is_authenticated();
 
         if self.load_credentials_task.is_some() {
             div().child(Label::new("Loading credentials...")).into_any()
         } else if self.should_render_editor(cx) {
             v_flex()
                 .size_full()
-                .on_action(cx.listener(Self::save_api_key))
-                .child(Label::new(format!("To use {}, you need to add an API key. Follow these steps:", match &self.target_agent {
+                .on_action(cx.listener(Self::save_credentials))
+                .child(Label::new(format!("To use {}, you need to authenticate.", match &self.target_agent {
                     ConfigurationViewTargetAgent::ZedAgent => "Zed's agent with Anthropic".into(),
                     ConfigurationViewTargetAgent::Other(agent) => agent.clone(),
                 })))
                 .child(
-                    List::new()
+                    h_flex()
+                        .w_full()
+                        .my_2()
                         .child(
-                            InstructionListItem::new(
-                                "Create one by visiting",
-                                Some("Anthropic's settings"),
-                                Some("https://console.anthropic.com/settings/keys")
+                            ToggleButtonGroup::single_row(
+                                "auth-method-selector",
+                                [
+                                    ToggleButtonSimple::new("API Key", {
+                                        let this = cx.entity().downgrade();
+                                        move |_, window, cx| {
+                                            if let Some(this) = this.upgrade() {
+                                                this.update(cx, |this, cx| {
+                                                    this.set_auth_method(AuthMethodSelection::ApiKey, window, cx);
+                                                });
+                                            }
+                                        }
+                                    }),
+                                    ToggleButtonSimple::new("Claude Subscription", {
+                                        let this = cx.entity().downgrade();
+                                        move |_, window, cx| {
+                                            if let Some(this) = this.upgrade() {
+                                                this.update(cx, |this, cx| {
+                                                    this.set_auth_method(AuthMethodSelection::OAuth, window, cx);
+                                                });
+                                            }
+                                        }
+                                    }),
+                                ],
                             )
+                            .selected_index(match self.auth_method {
+                                AuthMethodSelection::ApiKey => 0,
+                                AuthMethodSelection::OAuth => 1,
+                            })
+                            .style(ToggleButtonGroupStyle::Outlined)
+                            .width(rems_from_px(180.))
                         )
+                )
+                .child(
+                    v_flex()
+                        .gap_1()
                         .child(
-                            InstructionListItem::text_only("Paste your API key below and hit enter to start using the agent")
+                            match self.auth_method {
+                                AuthMethodSelection::ApiKey => {
+                                    List::new()
+                                        .child(
+                                            InstructionListItem::new(
+                                                "Create an API key by visiting",
+                                                Some("Anthropic's settings"),
+                                                Some("https://console.anthropic.com/settings/keys")
+                                            )
+                                        )
+                                        .child(
+                                            InstructionListItem::text_only("Paste your API key below (starts with 'sk-ant-')")
+                                        )
+                                }
+                                AuthMethodSelection::OAuth => {
+                                    List::new()
+                                        .child(
+                                            InstructionListItem::text_only("Use your Claude Pro or Max subscription")
+                                        )
+                                        .child(
+                                            InstructionListItem::text_only("Paste your refresh token below")
+                                        )
+                                        .child(
+                                            InstructionListItem::text_only("This allows usage through your subscription without separate API billing")
+                                        )
+                                }
+                            }
                         )
                 )
                 .child(
@@ -1021,7 +1364,7 @@ impl Render for ConfigurationView {
                         .border_1()
                         .border_color(cx.theme().colors().border)
                         .rounded_sm()
-                        .child(self.render_api_key_editor(cx)),
+                        .child(self.render_credentials_editor(cx)),
                 )
                 .child(
                     Label::new(
@@ -1046,6 +1389,8 @@ impl Render for ConfigurationView {
                         .child(Icon::new(IconName::Check).color(Color::Success))
                         .child(Label::new(if env_var_set {
                             format!("API key set in {API_KEY_ENV_VAR_NAME} environment variable")
+                        } else if is_using_oauth {
+                            "Authenticated with Claude Pro/Max subscription.".to_string()
                         } else {
                             let api_url = AnthropicLanguageModelProvider::api_url(cx);
                             if api_url == ANTHROPIC_API_URL {
